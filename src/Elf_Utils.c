@@ -10,21 +10,24 @@
 
 /*!
  * @brief
- *  Function to find symbols in a shared object by their hash value.
+ *  Function to find and resolve symbols in a shared object by their hash value.
+ *  When symbols are found, they are stored in the provided function_info_t array
+ *  through their resolved_ptr members.
  *
  * @param obj_path
  *  The path to the shared object file.
  * @param base_addr
  *  The base address of the shared object in memory.
- * @param target_hashes
- *  An array of target hash values to match against the symbol names.
- * @param num_hashes
- *  The number of hash values in the target_hashes array.
+ * @param functions
+ *  An array of function_info_t structures containing information about the target functions.
+ * @param num_functions
+ *  The number of functions in the functions array.
  *
  * @return
- *  An array of pointers to the resolved functions, or NULL if not found.
+ *  Always returns NULL. Function resolution status can be checked through the resolved_ptr 
+ *  members of the functions array.
  */
-void **find_hashed_symbols(const char *obj_path, ElfW(Addr) base_addr, uint32_t *target_hashes, int num_hashes)
+void **find_hashed_symbols(const char *obj_path, ElfW(Addr) base_addr, function_info_t *functions, int num_functions)
 {
     printf("[i] Searching in: %s\n", obj_path);
 
@@ -120,12 +123,6 @@ void **find_hashed_symbols(const char *obj_path, ElfW(Addr) base_addr, uint32_t 
     int num_symbols = dynsym_shdr->sh_size / sizeof(ElfW(Sym));
     printf("[i] Number of symbols: %d\n", num_symbols);
 
-    void **resolved_functions = malloc(num_hashes * sizeof(void *));
-    for (int i = 0; i < num_hashes; i++)
-    {
-        resolved_functions[i] = NULL;
-    }
-
     //
     // Find the symbols by hashes
     //
@@ -134,15 +131,15 @@ void **find_hashed_symbols(const char *obj_path, ElfW(Addr) base_addr, uint32_t 
         if (dynsym[i].st_name != 0)
         {
             const char *name = &dynstr[dynsym[i].st_name];
-            uint32_t name_hash = HASH(name);
-            // printf("[i] Checking symbol: %s (hash: %u)\n", name, name_hash);
-
-            for (int j = 0; j < num_hashes; j++)
+            
+            for (int j = 0; j < num_functions; j++)
             {
-                if (name_hash == target_hashes[j])
+                if (HASH(name) == functions[j].hash)
                 {
-                    resolved_functions[j] = (void *)(base_addr + dynsym[i].st_value);
-                    printf("[+] Found '%s' in %s @ %p\n", name, obj_path, resolved_functions[j]);
+                    void *resolved = (void *)(base_addr + dynsym[i].st_value);
+                    *(functions[j].resolved_ptr) = resolved;
+                    printf("[+] Found '%s' @ %p\n", name, resolved);
+                    functions[j].name = name;  // Literally only have this to print in main :)
                 }
             }
         }
@@ -152,7 +149,7 @@ void **find_hashed_symbols(const char *obj_path, ElfW(Addr) base_addr, uint32_t 
     free(dynsym);
     fclose(file);
 
-    return resolved_functions;
+    return NULL;
 }
 
 /*!
@@ -172,27 +169,21 @@ void **find_hashed_symbols(const char *obj_path, ElfW(Addr) base_addr, uint32_t 
 int callback(struct dl_phdr_info *info, size_t size, void *data)
 {
     void **callback_data = (void **)data;
-    void **resolved_functions = callback_data[0];
-    uint32_t *target_hashes = callback_data[1];
-    int num_hashes = *(int *)(callback_data[2]);
+    function_info_t *functions = callback_data[0];
+    int num_functions = *(int *)(callback_data[1]);
 
-    if (info->dlpi_name && info->dlpi_name[0])
-    {
+    if (info->dlpi_name && info->dlpi_name[0]) {
         // Only interested in libc
-        if (strstr(info->dlpi_name, "libc.so"))
-        {
-            void **functions = find_hashed_symbols(info->dlpi_name, info->dlpi_addr, target_hashes, num_hashes);
-            if (functions)
-            {
-                for (int i = 0; i < num_hashes; i++)
-                {
-                    resolved_functions[i] = functions[i];
-                }
-                free(functions);
+        if (strstr(info->dlpi_name, "libc.so")) {
+            void **resolved = find_hashed_symbols(info->dlpi_name, 
+                                                info->dlpi_addr, 
+                                                functions,
+                                                num_functions);
+            if (resolved) {
+                free(resolved);
                 return 1;
             }
         }
     }
-
     return 0;
 }
